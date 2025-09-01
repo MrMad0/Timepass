@@ -8,6 +8,8 @@ $password = '';
 try {
     $pdo = new PDO("mysql:host=$host;dbname=$dbname;charset=utf8", $username, $password);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    // Update existing tables to ensure all required columns exist
+    updateExistingTables($pdo);
 } catch(PDOException $e) {
     // If database doesn't exist, create it
     if ($e->getCode() == 1049) {
@@ -29,6 +31,8 @@ function createTables($pdo) {
         email VARCHAR(100) UNIQUE NOT NULL,
         password VARCHAR(255) NOT NULL,
         virtual_balance DECIMAL(15,2) DEFAULT 100000.00,
+        is_admin BOOLEAN DEFAULT FALSE,
+        is_active BOOLEAN DEFAULT TRUE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )");
 
@@ -40,6 +44,9 @@ function createTables($pdo) {
         content TEXT,
         difficulty ENUM('beginner', 'intermediate', 'advanced') DEFAULT 'beginner',
         order_num INT DEFAULT 0,
+        video_url VARCHAR(255),
+        thumbnail VARCHAR(255),
+        youtube_url VARCHAR(255),
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )");
 
@@ -127,6 +134,9 @@ function createTables($pdo) {
 
     // Insert sample data
     insertSampleData($pdo);
+    
+    // Update existing tables if needed
+    updateExistingTables($pdo);
 }
 
 function insertSampleData($pdo) {
@@ -179,6 +189,25 @@ function insertSampleData($pdo) {
     $stmt = $pdo->prepare("INSERT INTO badges (name, description, icon, criteria) VALUES (?, ?, ?, ?)");
     foreach ($badges as $badge) {
         $stmt->execute($badge);
+    }
+}
+
+function updateExistingTables($pdo) {
+    // Check and add missing columns to users table
+    try {
+        $pdo->exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN DEFAULT FALSE");
+        $pdo->exec("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE");
+    } catch (Exception $e) {
+        // Column might already exist, ignore error
+    }
+    
+    // Check and add missing columns to modules table
+    try {
+        $pdo->exec("ALTER TABLE modules ADD COLUMN IF NOT EXISTS video_url VARCHAR(255)");
+        $pdo->exec("ALTER TABLE modules ADD COLUMN IF NOT EXISTS thumbnail VARCHAR(255)");
+        $pdo->exec("ALTER TABLE modules ADD COLUMN IF NOT EXISTS youtube_url VARCHAR(255)");
+    } catch (Exception $e) {
+        // Column might already exist, ignore error
     }
 }
 ?>
