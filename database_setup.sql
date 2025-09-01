@@ -23,6 +23,8 @@ CREATE TABLE users (
     email VARCHAR(100) UNIQUE NOT NULL,
     password VARCHAR(255) NOT NULL,
     virtual_balance DECIMAL(15,2) DEFAULT 100000.00,
+    is_admin BOOLEAN DEFAULT FALSE,
+    is_active BOOLEAN DEFAULT TRUE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -34,6 +36,8 @@ CREATE TABLE modules (
     content TEXT,
     difficulty ENUM('beginner', 'intermediate', 'advanced') DEFAULT 'beginner',
     order_num INT DEFAULT 0,
+    video_url VARCHAR(255),
+    thumbnail VARCHAR(255),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
