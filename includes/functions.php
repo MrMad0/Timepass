@@ -133,6 +133,19 @@ function loginUser($email, $password) {
     return false;
 }
 
+function authenticateUser($username, $password) {
+    global $pdo;
+    
+    $stmt = $pdo->prepare("SELECT id, username, email, password, is_admin, is_active FROM users WHERE username = ?");
+    $stmt->execute([$username]);
+    $user = $stmt->fetch();
+    
+    if ($user && password_verify($password, $user['password']) && $user['is_active']) {
+        return $user;
+    }
+    return false;
+}
+
 function getUserProgress($userId) {
     global $pdo;
     
@@ -263,11 +276,27 @@ function getStocks() {
     return $stmt->fetchAll();
 }
 
+function getAllStocks() {
+    global $pdo;
+    
+    $stmt = $pdo->prepare("SELECT * FROM stocks ORDER BY symbol");
+    $stmt->execute();
+    return $stmt->fetchAll();
+}
+
 function getStock($symbol) {
     global $pdo;
     
     $stmt = $pdo->prepare("SELECT * FROM stocks WHERE symbol = ?");
     $stmt->execute([$symbol]);
+    return $stmt->fetch();
+}
+
+function getStockById($id) {
+    global $pdo;
+    
+    $stmt = $pdo->prepare("SELECT * FROM stocks WHERE id = ?");
+    $stmt->execute([$id]);
     return $stmt->fetch();
 }
 
@@ -412,5 +441,597 @@ function getDifficultyColor($difficulty) {
         case 'advanced': return 'danger';
         default: return 'secondary';
     }
+}
+
+// Admin functions
+function createAdminUser() {
+    global $pdo;
+    
+    // Check if admin user exists
+    $stmt = $pdo->prepare("SELECT id FROM users WHERE username = 'admin'");
+    $stmt->execute();
+    
+    if (!$stmt->fetch()) {
+        $hashedPassword = password_hash('admin123', PASSWORD_DEFAULT);
+        $stmt = $pdo->prepare("INSERT INTO users (username, email, password, is_admin, is_active) VALUES (?, ?, ?, ?, ?)");
+        $stmt->execute(['admin', 'admin@investor.edu', $hashedPassword, 1, 1]);
+    }
+}
+
+function getAdminStats() {
+    global $pdo;
+    
+    $stats = [];
+    
+    // Total users
+    $stmt = $pdo->query("SELECT COUNT(*) FROM users");
+    $stats['total_users'] = $stmt->fetchColumn();
+    
+    // Total courses
+    $stmt = $pdo->query("SELECT COUNT(*) FROM modules");
+    $stats['total_courses'] = $stmt->fetchColumn();
+    
+    // Total stocks
+    $stmt = $pdo->query("SELECT COUNT(*) FROM stocks");
+    $stats['total_stocks'] = $stmt->fetchColumn();
+    
+    // Total badges
+    $stmt = $pdo->query("SELECT COUNT(*) FROM badges");
+    $stats['total_badges'] = $stmt->fetchColumn();
+    
+    // Recent users
+    $stmt = $pdo->query("SELECT username, created_at FROM users ORDER BY created_at DESC LIMIT 5");
+    $stats['recent_users'] = $stmt->fetchAll();
+    
+    // Recent trades
+    $stmt = $pdo->query("SELECT stock_symbol, trade_type, quantity, price FROM user_trades ORDER BY trade_date DESC LIMIT 5");
+    $stats['recent_trades'] = $stmt->fetchAll();
+    
+    return $stats;
+}
+
+function getAnalyticsData() {
+    global $pdo;
+    
+    $analytics = [];
+    
+    // Basic stats
+    $stmt = $pdo->query("SELECT COUNT(*) FROM users");
+    $analytics['total_users'] = $stmt->fetchColumn();
+    
+    $stmt = $pdo->query("SELECT COUNT(*) FROM modules");
+    $analytics['total_courses'] = $stmt->fetchColumn();
+    
+    $stmt = $pdo->query("SELECT COUNT(*) FROM user_trades");
+    $analytics['total_trades'] = $stmt->fetchColumn();
+    
+    $stmt = $pdo->query("SELECT COUNT(*) FROM user_badges");
+    $analytics['total_badges_awarded'] = $stmt->fetchColumn();
+    
+    // New users this month
+    $stmt = $pdo->query("SELECT COUNT(*) FROM users WHERE created_at >= DATE_SUB(NOW(), INTERVAL 1 MONTH)");
+    $analytics['new_users_this_month'] = $stmt->fetchColumn();
+    
+    // Average completion rate
+    $stmt = $pdo->query("SELECT AVG(completion_rate) FROM (SELECT (COUNT(CASE WHEN completed = 1 THEN 1 END) * 100.0 / COUNT(*)) as completion_rate FROM user_progress GROUP BY user_id) as rates");
+    $analytics['avg_completion_rate'] = round($stmt->fetchColumn() ?: 0, 1);
+    
+    // Total trading volume
+    $stmt = $pdo->query("SELECT SUM(total_amount) FROM user_trades");
+    $analytics['total_trading_volume'] = $stmt->fetchColumn() ?: 0;
+    
+    // Average badges per user
+    $stmt = $pdo->query("SELECT AVG(badge_count) FROM (SELECT COUNT(*) as badge_count FROM user_badges GROUP BY user_id) as counts");
+    $analytics['avg_badges_per_user'] = round($stmt->fetchColumn() ?: 0, 1);
+    
+    // User registration trend (last 7 days)
+    $labels = [];
+    $data = [];
+    for ($i = 6; $i >= 0; $i--) {
+        $date = date('Y-m-d', strtotime("-$i days"));
+        $labels[] = date('M d', strtotime($date));
+        
+        $stmt = $pdo->prepare("SELECT COUNT(*) FROM users WHERE DATE(created_at) = ?");
+        $stmt->execute([$date]);
+        $data[] = $stmt->fetchColumn();
+    }
+    $analytics['user_registration_labels'] = $labels;
+    $analytics['user_registration_data'] = $data;
+    
+    // Course completion by difficulty
+    $stmt = $pdo->query("SELECT difficulty, COUNT(*) as count FROM user_progress up JOIN modules m ON up.module_id = m.id WHERE up.completed = 1 GROUP BY difficulty");
+    $difficultyData = $stmt->fetchAll();
+    
+    $analytics['course_completion_labels'] = array_column($difficultyData, 'difficulty');
+    $analytics['course_completion_data'] = array_column($difficultyData, 'count');
+    
+    // Trading activity by stock
+    $stmt = $pdo->query("SELECT stock_symbol, COUNT(*) as count FROM user_trades GROUP BY stock_symbol ORDER BY count DESC LIMIT 10");
+    $tradingData = $stmt->fetchAll();
+    
+    $analytics['trading_activity_labels'] = array_column($tradingData, 'stock_symbol');
+    $analytics['trading_activity_data'] = array_column($tradingData, 'count');
+    
+    // Quiz performance distribution - Fixed SQL syntax issue
+    $stmt = $pdo->query("SELECT 
+        CASE 
+            WHEN quiz_score <= 20 THEN '0-20%'
+            WHEN quiz_score <= 40 THEN '21-40%'
+            WHEN quiz_score <= 60 THEN '41-60%'
+            WHEN quiz_score <= 80 THEN '61-80%'
+            ELSE '81-100%'
+        END as score_range,
+        COUNT(*) as count
+        FROM user_progress 
+        WHERE quiz_score > 0 
+        GROUP BY score_range 
+        ORDER BY score_range");
+    $quizData = $stmt->fetchAll();
+    
+    $analytics['quiz_performance_data'] = array_column($quizData, 'count');
+    
+    // Top performing users
+    $stmt = $pdo->query("SELECT 
+        u.username, u.created_at,
+        COUNT(CASE WHEN up.completed = 1 THEN 1 END) as courses_completed,
+        COUNT(up.id) as total_courses,
+        AVG(up.quiz_score) as avg_quiz_score,
+        COUNT(ub.id) as badges_earned,
+        COALESCE(SUM(portfolio_value - 100000), 0) as trading_pnl
+        FROM users u
+        LEFT JOIN user_progress up ON u.id = up.user_id
+        LEFT JOIN user_badges ub ON u.id = ub.user_id
+        LEFT JOIN (
+            SELECT user_id, SUM(quantity * current_price) as portfolio_value
+            FROM user_portfolio up
+            JOIN stocks s ON up.stock_symbol = s.symbol
+            GROUP BY user_id
+        ) p ON u.id = p.user_id
+        GROUP BY u.id
+        ORDER BY courses_completed DESC, avg_quiz_score DESC
+        LIMIT 10");
+    $analytics['top_users'] = $stmt->fetchAll();
+    
+    // Recent activity
+    $analytics['recent_activity'] = [];
+    
+    // Recent user registrations
+    $stmt = $pdo->query("SELECT username, created_at FROM users ORDER BY created_at DESC LIMIT 3");
+    $recentUsers = $stmt->fetchAll();
+    foreach ($recentUsers as $user) {
+        $analytics['recent_activity'][] = [
+            'type' => 'user',
+            'type_color' => 'primary',
+            'icon' => 'user-plus',
+            'description' => "New user registered: {$user['username']}",
+            'time_ago' => timeAgo($user['created_at'])
+        ];
+    }
+    
+    // Recent trades
+    $stmt = $pdo->query("SELECT stock_symbol, trade_type, quantity, trade_date FROM user_trades ORDER BY trade_date DESC LIMIT 3");
+    $recentTrades = $stmt->fetchAll();
+    foreach ($recentTrades as $trade) {
+        $analytics['recent_activity'][] = [
+            'type' => 'trade',
+            'type_color' => $trade['trade_type'] == 'buy' ? 'success' : 'danger',
+            'icon' => $trade['trade_type'] == 'buy' ? 'arrow-up' : 'arrow-down',
+            'description' => "{$trade['trade_type']} {$trade['quantity']} shares of {$trade['stock_symbol']}",
+            'time_ago' => timeAgo($trade['trade_date'])
+        ];
+    }
+    
+    // Stock performance
+    $stmt = $pdo->query("SELECT symbol, current_price, change_percent, volume FROM stocks ORDER BY ABS(change_percent) DESC LIMIT 10");
+    $analytics['stock_performance'] = $stmt->fetchAll();
+    
+    // Badge distribution
+    $stmt = $pdo->query("SELECT b.name, b.icon, COUNT(ub.id) as count, 
+        (COUNT(ub.id) * 100.0 / (SELECT COUNT(*) FROM users)) as percentage
+        FROM badges b
+        LEFT JOIN user_badges ub ON b.id = ub.badge_id
+        GROUP BY b.id
+        ORDER BY count DESC");
+    $analytics['badge_distribution'] = $stmt->fetchAll();
+    
+    return $analytics;
+}
+
+function getAllUsers() {
+    global $pdo;
+    $stmt = $pdo->query("SELECT * FROM users ORDER BY created_at DESC");
+    return $stmt->fetchAll();
+}
+
+function getUserById($id) {
+    global $pdo;
+    $stmt = $pdo->prepare("SELECT * FROM users WHERE id = ?");
+    $stmt->execute([$id]);
+    return $stmt->fetch();
+}
+
+function updateUserByAdmin($data) {
+    global $pdo;
+    
+    try {
+        $updates = [];
+        $params = [];
+        
+        if (!empty($data['username'])) {
+            $updates[] = "username = ?";
+            $params[] = $data['username'];
+        }
+        
+        if (!empty($data['email'])) {
+            $updates[] = "email = ?";
+            $params[] = $data['email'];
+        }
+        
+        if (!empty($data['new_password'])) {
+            $updates[] = "password = ?";
+            $params[] = password_hash($data['new_password'], PASSWORD_DEFAULT);
+        }
+        
+        if (isset($data['virtual_balance'])) {
+            $updates[] = "virtual_balance = ?";
+            $params[] = $data['virtual_balance'];
+        }
+        
+        if (isset($data['is_admin'])) {
+            $updates[] = "is_admin = ?";
+            $params[] = $data['is_admin'] ? 1 : 0;
+        }
+        
+        $params[] = $data['user_id'];
+        
+        $sql = "UPDATE users SET " . implode(', ', $updates) . " WHERE id = ?";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+        
+        return "User updated successfully!";
+    } catch (PDOException $e) {
+        return "Error updating user: " . $e->getMessage();
+    }
+}
+
+function deleteUserByAdmin($userId) {
+    global $pdo;
+    
+    try {
+        $pdo->beginTransaction();
+        
+        // Delete user's data from all related tables
+        $pdo->prepare("DELETE FROM user_progress WHERE user_id = ?")->execute([$userId]);
+        $pdo->prepare("DELETE FROM user_badges WHERE user_id = ?")->execute([$userId]);
+        $pdo->prepare("DELETE FROM user_trades WHERE user_id = ?")->execute([$userId]);
+        $pdo->prepare("DELETE FROM user_portfolio WHERE user_id = ?")->execute([$userId]);
+        $pdo->prepare("DELETE FROM users WHERE id = ?")->execute([$userId]);
+        
+        $pdo->commit();
+        return "User deleted successfully!";
+    } catch (PDOException $e) {
+        $pdo->rollBack();
+        return "Error deleting user: " . $e->getMessage();
+    }
+}
+
+function toggleUserAdminStatus($userId) {
+    global $pdo;
+    
+    try {
+        $stmt = $pdo->prepare("UPDATE users SET is_admin = NOT is_admin WHERE id = ?");
+        $stmt->execute([$userId]);
+        
+        return "User admin status updated successfully!";
+    } catch (PDOException $e) {
+        return "Error updating admin status: " . $e->getMessage();
+    }
+}
+
+function getAllCourses() {
+    global $pdo;
+    $stmt = $pdo->query("SELECT * FROM modules ORDER BY order_num, id");
+    return $stmt->fetchAll();
+}
+
+function getCourseById($id) {
+    global $pdo;
+    $stmt = $pdo->prepare("SELECT * FROM modules WHERE id = ?");
+    $stmt->execute([$id]);
+    return $stmt->fetch();
+}
+
+function addCourse($data, $files) {
+    global $pdo;
+    
+    try {
+        $videoUrl = '';
+        $thumbnail = '';
+        $youtubeUrl = '';
+        
+        // Handle video type
+        $videoType = $data['video_type'] ?? 'file';
+        
+        if ($videoType == 'youtube') {
+            // Handle YouTube URL
+            if (!empty($data['youtube_url'])) {
+                $youtubeUrl = trim($data['youtube_url']);
+            }
+        } else {
+            // Handle video file upload
+            if (isset($files['video_file']) && $files['video_file']['error'] == 0) {
+                $videoFile = $files['video_file'];
+                $videoExt = pathinfo($videoFile['name'], PATHINFO_EXTENSION);
+                $videoUrl = uniqid() . '.' . $videoExt;
+                $videoPath = '../uploads/videos/' . $videoUrl;
+                
+                if (!move_uploaded_file($videoFile['tmp_name'], $videoPath)) {
+                    return "Error uploading video file.";
+                }
+            }
+        }
+        
+        // Handle thumbnail upload
+        if (isset($files['thumbnail']) && $files['thumbnail']['error'] == 0) {
+            $thumbFile = $files['thumbnail'];
+            $thumbExt = pathinfo($thumbFile['name'], PATHINFO_EXTENSION);
+            $thumbnail = uniqid() . '.' . $thumbExt;
+            $thumbPath = '../uploads/thumbnails/' . $thumbnail;
+            
+            if (!move_uploaded_file($thumbFile['tmp_name'], $thumbPath)) {
+                return "Error uploading thumbnail.";
+            }
+        }
+        
+        $stmt = $pdo->prepare("INSERT INTO modules (title, description, content, difficulty, order_num, video_url, thumbnail, youtube_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+        $stmt->execute([
+            $data['title'],
+            $data['description'],
+            $data['content'],
+            $data['difficulty'],
+            $data['order_num'],
+            $videoUrl,
+            $thumbnail,
+            $youtubeUrl
+        ]);
+        
+        return "Course added successfully!";
+    } catch (PDOException $e) {
+        return "Error adding course: " . $e->getMessage();
+    }
+}
+
+function updateCourse($data, $files) {
+    global $pdo;
+    
+    try {
+        // First, ensure all required columns exist
+        updateExistingTables($pdo);
+        
+        $updates = [];
+        $params = [];
+        
+        $updates[] = "title = ?";
+        $params[] = $data['title'];
+        
+        $updates[] = "description = ?";
+        $params[] = $data['description'];
+        
+        $updates[] = "content = ?";
+        $params[] = $data['content'];
+        
+        $updates[] = "difficulty = ?";
+        $params[] = $data['difficulty'];
+        
+        $updates[] = "order_num = ?";
+        $params[] = $data['order_num'];
+        
+        // Handle video type
+        $videoType = $data['video_type'] ?? 'file';
+        
+        if ($videoType == 'youtube') {
+            // Handle YouTube URL
+            if (!empty($data['youtube_url'])) {
+                $updates[] = "youtube_url = ?";
+                $params[] = trim($data['youtube_url']);
+                
+                // Clear video_url if switching to YouTube
+                $updates[] = "video_url = ?";
+                $params[] = '';
+            }
+        } else {
+            // Handle video file upload
+            if (isset($files['video_file']) && $files['video_file']['error'] == 0) {
+                $videoFile = $files['video_file'];
+                $videoExt = pathinfo($videoFile['name'], PATHINFO_EXTENSION);
+                $videoUrl = uniqid() . '.' . $videoExt;
+                $videoPath = '../uploads/videos/' . $videoUrl;
+                
+                if (move_uploaded_file($videoFile['tmp_name'], $videoPath)) {
+                    $updates[] = "video_url = ?";
+                    $params[] = $videoUrl;
+                    
+                    // Clear youtube_url if switching to uploaded video
+                    $updates[] = "youtube_url = ?";
+                    $params[] = '';
+                }
+            } else {
+                // No new video file uploaded, but switching from YouTube to file type
+                // Clear youtube_url and keep existing video_url (if any)
+                $updates[] = "youtube_url = ?";
+                $params[] = '';
+            }
+        }
+        
+        // Handle thumbnail upload
+        if (isset($files['thumbnail']) && $files['thumbnail']['error'] == 0) {
+            $thumbFile = $files['thumbnail'];
+            $thumbExt = pathinfo($thumbFile['name'], PATHINFO_EXTENSION);
+            $thumbnail = uniqid() . '.' . $thumbExt;
+            $thumbPath = '../uploads/thumbnails/' . $thumbnail;
+            
+            if (move_uploaded_file($thumbFile['tmp_name'], $thumbPath)) {
+                $updates[] = "thumbnail = ?";
+                $params[] = $thumbnail;
+            }
+        }
+        
+        $params[] = $data['course_id'];
+        
+        $sql = "UPDATE modules SET " . implode(', ', $updates) . " WHERE id = ?";
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute($params);
+        
+        return "Course updated successfully!";
+    } catch (PDOException $e) {
+        return "Error updating course: " . $e->getMessage();
+    }
+}
+
+function deleteCourse($courseId) {
+    global $pdo;
+    
+    try {
+        $pdo->beginTransaction();
+        
+        // Delete related quizzes
+        $pdo->prepare("DELETE FROM quizzes WHERE module_id = ?")->execute([$courseId]);
+        
+        // Delete user progress
+        $pdo->prepare("DELETE FROM user_progress WHERE module_id = ?")->execute([$courseId]);
+        
+        // Delete the course
+        $pdo->prepare("DELETE FROM modules WHERE id = ?")->execute([$courseId]);
+        
+        $pdo->commit();
+        return "Course deleted successfully!";
+    } catch (PDOException $e) {
+        $pdo->rollBack();
+        return "Error deleting course: " . $e->getMessage();
+    }
+}
+
+function addStock($data) {
+    global $pdo;
+    
+    try {
+        $stmt = $pdo->prepare("INSERT INTO stocks (symbol, name, sector, current_price, change_percent, volume, market_cap) VALUES (?, ?, ?, ?, ?, ?, ?)");
+        $stmt->execute([
+            $data['symbol'],
+            $data['name'],
+            $data['sector'],
+            $data['current_price'],
+            $data['change_percent'],
+            $data['volume'],
+            $data['market_cap']
+        ]);
+        
+        return "Stock added successfully!";
+    } catch (PDOException $e) {
+        return "Error adding stock: " . $e->getMessage();
+    }
+}
+
+function updateStock($data) {
+    global $pdo;
+    
+    try {
+        $stmt = $pdo->prepare("UPDATE stocks SET symbol = ?, name = ?, sector = ?, current_price = ?, change_percent = ?, volume = ?, market_cap = ? WHERE id = ?");
+        $stmt->execute([
+            $data['symbol'],
+            $data['name'],
+            $data['sector'],
+            $data['current_price'],
+            $data['change_percent'],
+            $data['volume'],
+            $data['market_cap'],
+            $data['stock_id']
+        ]);
+        
+        return "Stock updated successfully!";
+    } catch (PDOException $e) {
+        return "Error updating stock: " . $e->getMessage();
+    }
+}
+
+function deleteStock($stockId) {
+    global $pdo;
+    
+    try {
+        $pdo->beginTransaction();
+        
+        // Delete related trades and portfolio entries
+        $pdo->prepare("DELETE FROM user_trades WHERE stock_symbol = (SELECT symbol FROM stocks WHERE id = ?)")->execute([$stockId]);
+        $pdo->prepare("DELETE FROM user_portfolio WHERE stock_symbol = (SELECT symbol FROM stocks WHERE id = ?)")->execute([$stockId]);
+        
+        // Delete the stock
+        $pdo->prepare("DELETE FROM stocks WHERE id = ?")->execute([$stockId]);
+        
+        $pdo->commit();
+        return "Stock deleted successfully!";
+    } catch (PDOException $e) {
+        $pdo->rollBack();
+        return "Error deleting stock: " . $e->getMessage();
+    }
+}
+
+function bulkUpdateStockPrices($data) {
+    global $pdo;
+    
+    try {
+        $pdo->beginTransaction();
+        
+        if (isset($data['prices']) && isset($data['changes'])) {
+            foreach ($data['prices'] as $stockId => $price) {
+                $change = $data['changes'][$stockId] ?? 0;
+                
+                $stmt = $pdo->prepare("UPDATE stocks SET current_price = ?, change_percent = ? WHERE id = ?");
+                $stmt->execute([$price, $change, $stockId]);
+            }
+        }
+        
+        $pdo->commit();
+        return "Stock prices updated successfully!";
+    } catch (PDOException $e) {
+        $pdo->rollBack();
+        return "Error updating stock prices: " . $e->getMessage();
+    }
+}
+
+function timeAgo($datetime) {
+    $time = time() - strtotime($datetime);
+    
+    if ($time < 60) {
+        return "Just now";
+    } elseif ($time < 3600) {
+        $minutes = floor($time / 60);
+        return $minutes . " minute" . ($minutes > 1 ? "s" : "") . " ago";
+    } elseif ($time < 86400) {
+        $hours = floor($time / 3600);
+        return $hours . " hour" . ($hours > 1 ? "s" : "") . " ago";
+    } else {
+        $days = floor($time / 86400);
+        return $days . " day" . ($days > 1 ? "s" : "") . " ago";
+    }
+}
+
+function getYouTubeEmbedUrl($url) {
+    // Extract video ID from various YouTube URL formats
+    $videoId = '';
+    
+    // Handle different YouTube URL formats
+    if (preg_match('/youtube\.com\/watch\?v=([a-zA-Z0-9_-]+)/', $url, $matches)) {
+        $videoId = $matches[1];
+    } elseif (preg_match('/youtu\.be\/([a-zA-Z0-9_-]+)/', $url, $matches)) {
+        $videoId = $matches[1];
+    } elseif (preg_match('/youtube\.com\/embed\/([a-zA-Z0-9_-]+)/', $url, $matches)) {
+        $videoId = $matches[1];
+    }
+    
+    if ($videoId) {
+        return "https://www.youtube.com/embed/{$videoId}";
+    }
+    
+    return $url; // Return original URL if no video ID found
 }
 ?>
